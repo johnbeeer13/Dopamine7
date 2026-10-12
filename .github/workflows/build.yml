@@ -1,0 +1,86 @@
+name: Dopamine Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Dopamine
+    runs-on: macos-14
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Install dependencies
+        run: |
+          brew install ldid libarchive ossp-uuid dpkg
+          
+          # Build and install trustcache from source using OpenSSL
+          cd /tmp
+          git clone https://github.com/CRKatri/trustcache.git
+          cd trustcache
+          
+          export CFLAGS="-I/opt/homebrew/opt/openssl@3/include"
+          export LDFLAGS="-L/opt/homebrew/opt/openssl@3/lib"
+          
+          make OPENSSL=1
+          sudo cp trustcache /usr/local/bin/trustcache
+          sudo chmod +x /usr/local/bin/trustcache
+          
+          which trustcache
+          ls -l /usr/local/bin/trustcache
+          
+          cd $GITHUB_WORKSPACE
+          
+          # Install Theos
+          export THEOS=~/theos
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          echo "THEOS_MAKE_PATH=$THEOS/makefiles" >> $GITHUB_ENV
+          
+          # Set SDK paths
+          SDKVERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "SDKVERSION=$SDKVERSION" >> $GITHUB_ENV
+          echo "SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+      
+      - name: Build BaseBin
+        run: |
+          cd BaseBin
+          rm -f prebuilt/trustcache
+          rm -rf _external/include/xpc
+          mkdir -p .build
+          make ChOma XPF MachOMerger libjailbreak systemhook forkfix launchdhook hookd boomerang jbctl idownloadd watchdoghook rootlesshooks dopamine basebin.tc dyldhook basebin.tar
+      
+      - name: Build Packages
+        run: |
+          cd Packages
+          make clean
+          make
+      
+      - name: Build Application
+        run: |
+          cd Application
+          make
+      
+      - name: Build Standalone
+        run: |
+          cd Standalone
+          make
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dopamine-Build-${{ github.sha }}
+          path: |
+            BaseBin/basebin.tar
+            BaseBin/basebin.tc
+            Packages/*/*.deb
+            Application/Dopamine.ipa
+            Application/Dopamine.tipa
+            Standalone/Dopamine.tar
