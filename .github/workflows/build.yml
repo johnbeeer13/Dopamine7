@@ -55,6 +55,7 @@ jobs:
           rm -f prebuilt/trustcache
           rm -rf _external/include/xpc
           mkdir -p .build
+          export BUILD_STANDALONE=0
           make ChOma XPF MachOMerger libjailbreak systemhook forkfix launchdhook hookd boomerang jbctl idownloadd watchdoghook rootlesshooks dopamine basebin.tc dyldhook basebin.tar
       
       - name: Build Packages
