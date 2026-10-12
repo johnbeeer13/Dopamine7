@@ -18,13 +18,15 @@
 // We solve this here by redirecting dlopen calls for files in /usr/lib to /var/69/basebin/.fakelib (if the latter is accessible)
 // This way the vnode will not be on /usr/lib mount and the /usr/lib mount therefore can be unmounted without making stuff crash
 // There are a few rare edge cases of processes that cannot access /var/69/basebin/.fakelib for some reason, so we need to make sure those still go over /usr/lib
+// NOTE: This redirection ONLY happens when hide jailbreak is actually enabled!
 
 #if IOS < 18
 
 extern void *ORIG(_ZN5dyld44APIs11dlopen_fromEPKciPv)(uintptr_t self, const char* path, int mode, void* addressInCaller);
 void *HOOK(_ZN5dyld44APIs11dlopen_fromEPKciPv)(uintptr_t self, const char* path, int mode, void* addressInCaller)
 {
-	if (jbinfo_is_checked_in()) {
+	// Only redirect to .fakelib if hide jailbreak is actually enabled
+	if (jbinfo_is_checked_in() && jbinfo_is_hide_enabled()) {
 		if (!access(path, F_OK)) {
 			const char *orgPrefix = "/usr/lib/";
     		size_t orgPrefixLen = strlen(orgPrefix);

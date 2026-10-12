@@ -174,7 +174,7 @@ int systemwide_trust_file_by_path(const char *path)
 	return r;
 }
 
-int systemwide_process_checkin(audit_token_t *processToken, char **rootPathOut, char **bootUUIDOut, char **sandboxExtensionsOut, bool *fullyDebuggedOut, bool *forceCSAdhocOut)
+int systemwide_process_checkin(audit_token_t *processToken, char **rootPathOut, char **bootUUIDOut, char **sandboxExtensionsOut, bool *fullyDebuggedOut, bool *forceCSAdhocOut, bool *hideEnabledOut)
 {
 	// Fetch process info
 	pid_t pid = audit_token_to_pid(*processToken);
@@ -221,6 +221,9 @@ int systemwide_process_checkin(audit_token_t *processToken, char **rootPathOut, 
 
 	// CS_ADHOC needs to be forced in dyld's fcntl hook on SPTM devices
 	*forceCSAdhocOut = (ksymbol(SPTMArgs) != 0);
+
+	// Pass hide enabled state (!gSystemwideDomainEnabled means hiding is enabled)
+	*hideEnabledOut = !gSystemwideDomainEnabled;
 
 	// Allow invalid pages
 	cs_allow_invalid(proc, fullyDebugged);

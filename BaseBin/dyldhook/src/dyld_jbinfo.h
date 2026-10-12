@@ -10,6 +10,7 @@ struct dyld_jbinfo {
 	char *sandboxExtensions;
 	bool fullyDebugged;
 	bool forceCSAdhoc;
+	bool hideEnabled;
 
 	char data[];
 };
@@ -17,3 +18,4 @@ struct dyld_jbinfo {
 extern bool jbinfo_is_checked_in(void);
 extern char *jbinfo_get_jbroot(void);
 extern bool jbinfo_should_force_cs_adhoc(void);
+extern bool jbinfo_is_hide_enabled(void);
