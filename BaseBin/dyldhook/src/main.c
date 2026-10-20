@@ -10,6 +10,7 @@
 #include "dyld_jbinfo.h"
 
 bool gDyldHookLog = false;
+extern bool gLoadingSystemhook;
 
 __attribute__((section("__DATA,__jbinfo"))) static char jbinfoSection[0x4000];
 #define jbInfo ((struct dyld_jbinfo *)&jbinfoSection[0])
@@ -215,6 +216,9 @@ void dyldhook_init(uintptr_t kernelParams)
 		}
 		return;
 	}
+
+	// Set flag to indicate systemhook.dylib will be loaded
+	gLoadingSystemhook = true;
 
 	// If all is well, do check-in right here before dyld_start!
 	dyldhook_perform_checkin();
