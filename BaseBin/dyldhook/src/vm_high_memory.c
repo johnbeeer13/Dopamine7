@@ -1,6 +1,5 @@
 #include <mach/mach.h>
 #include <mach/vm_map.h>
-#include <mach/mach_vm.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -13,6 +12,27 @@ extern bool gLoadingSystemhook;
 
 // Import the original libsystem vm_allocate
 extern kern_return_t __kernelrpc_vm_allocate(vm_map_t target, vm_offset_t *address, vm_size_t size, int flags);
+
+// iOS SDK type definitions for mach_vm functions
+typedef uint64_t mach_vm_address_t;
+typedef uint64_t mach_vm_size_t;
+typedef uint64_t mach_vm_offset_t;
+typedef uint64_t memory_object_offset_t;
+
+// Declare mach_vm_map (iOS SDK doesn't expose it in headers but it exists in the kernel)
+extern kern_return_t mach_vm_map(
+    vm_map_t target_task,
+    mach_vm_address_t *address,
+    mach_vm_size_t size,
+    mach_vm_offset_t mask,
+    int flags,
+    mach_port_t object,
+    memory_object_offset_t offset,
+    boolean_t copy,
+    vm_prot_t cur_protection,
+    vm_prot_t max_protection,
+    vm_inherit_t inheritance
+);
 
 // Target high memory range: 0x7000000000 - 0x7FFFFFFFFFFF
 #define HIGH_MEMORY_START  0x7000000000ULL
