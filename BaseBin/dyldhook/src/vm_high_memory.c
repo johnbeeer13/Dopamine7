@@ -10,8 +10,8 @@ extern bool gDyldHookLog;
 extern int _simple_dprintf(int fd, const char *format, ...);
 extern bool gLoadingSystemhook;
 
-// Declare mach_vm_allocate for fallback (exists in iOS SDK)
-extern kern_return_t mach_vm_allocate(vm_map_t target, mach_vm_address_t *address, mach_vm_size_t size, int flags);
+// Declare the original vm_allocate trampoline from main.S (renamed from vm_allocate to _orig_vm_allocate)
+extern kern_return_t _orig_vm_allocate(vm_map_t target, vm_address_t *address, vm_size_t size, int flags);
 
 // iOS SDK type definitions for mach_vm functions
 typedef uint64_t mach_vm_address_t;
@@ -88,9 +88,6 @@ kern_return_t vm_allocate(vm_map_t target_task, vm_address_t *address, vm_size_t
         abort();  // HARD STOP - NO FALLBACK
     }
     
-    // Normal allocation for non-systemhook dylibs
-    mach_vm_address_t addr = (mach_vm_address_t)*address;
-    kern_return_t kr = mach_vm_allocate(target_task, &addr, (mach_vm_size_t)size, flags);
-    *address = (vm_address_t)addr;
-    return kr;
+    // Normal allocation for non-systemhook dylibs - use original trampoline
+    return _orig_vm_allocate(target_task, address, size, flags);
 }
