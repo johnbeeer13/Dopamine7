@@ -10,6 +10,7 @@
 #include "dyld_jbinfo.h"
 
 bool gDyldHookLog = false;
+bool gLoadingSystemhook = false;
 
 __attribute__((section("__DATA,__jbinfo"))) static char jbinfoSection[0x4000];
 #define jbInfo ((struct dyld_jbinfo *)&jbinfoSection[0])
@@ -63,7 +64,7 @@ void dyldhook_perform_checkin(void)
 
 	// Tell jbserver (in launchd) that this process exists
 	// This will, amongst other things, disable page validation, which allows instruction hooks to be applied later
-	if (jbclient_mach_process_checkin(jbRootPathPtr, bootUUIDPtr, sandboxExtensionsPtr, &jbInfo->fullyDebugged, &jbInfo->forceCSAdhoc, &jbInfo->hideEnabled) == 0) {
+	if (jbclient_mach_process_checkin(jbRootPathPtr, bootUUIDPtr, sandboxExtensionsPtr, &jbInfo->fullyDebugged, &jbInfo->forceCSAdhoc) == 0) {
 		if (gDyldHookLog) {
 			_simple_dprintf(2, "Performed checkin [%s %s %s]\n", jbRootPathPtr, bootUUIDPtr, sandboxExtensionsPtr);
 		}
@@ -214,6 +215,12 @@ void dyldhook_init(uintptr_t kernelParams)
 			_simple_dprintf(2, "Not checking in, no systemhook found in DYLD_INSERT_LIBRARIES (%s)\n", insertLibrariesVar);
 		}
 		return;
+	}
+
+	// Enable high memory allocation for systemhook loading
+	gLoadingSystemhook = true;
+	if (gDyldHookLog) {
+		_simple_dprintf(2, "Enabled high memory allocation for systemhook\n");
 	}
 
 	// If all is well, do check-in right here before dyld_start!
