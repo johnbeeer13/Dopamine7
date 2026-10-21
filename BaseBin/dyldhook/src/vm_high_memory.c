@@ -2,12 +2,113 @@
 #include <mach/vm_map.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <asl.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
 
 // External functions
 extern bool jbinfo_is_checked_in(void);
 extern bool gDyldHookLog;
 extern int _simple_dprintf(int fd, const char *format, ...);
 extern bool gLoadingSystemhook;
+
+// Global log file descriptor (opened once, reused)
+static int g_logfd = -1;
+
+// Inline strlen to avoid external dependency
+static inline size_t my_strlen(const char *s) {
+    const char *p = s;
+    while (*p) p++;
+    return p - s;
+}
+
+// Inline write wrapper
+static inline void write_to_fd(int fd, const char *msg) {
+    if (fd >= 0) {
+        write(fd, msg, my_strlen(msg));
+    }
+}
+
+// Simple hex formatter for uint64_t
+static inline void format_hex(char *buf, unsigned long long val) {
+    const char hex[] = "0123456789abcdef";
+    int i = 15;  // 16 hex digits for 64-bit
+    buf[16] = '\0';
+    while (i >= 0) {
+        buf[i--] = hex[val & 0xF];
+        val >>= 4;
+    }
+}
+
+// Simple decimal formatter for int
+static inline void format_dec(char *buf, int val) {
+    if (val < 0) {
+        *buf++ = '-';
+        val = -val;
+    }
+    
+    char tmp[16];
+    int i = 0;
+    do {
+        tmp[i++] = '0' + (val % 10);
+        val /= 10;
+    } while (val > 0);
+    
+    while (i > 0) {
+        *buf++ = tmp[--i];
+    }
+    *buf = '\0';
+}
+
+// Simple string copy
+static inline void my_strcpy(char *dst, const char *src) {
+    while (*src) {
+        *dst++ = *src++;
+    }
+    *dst = '\0';
+}
+
+// Build log message with formatting
+static inline void build_log_message(char *buf, const char *prefix, unsigned long long hex_val, const char *suffix) {
+    my_strcpy(buf, prefix);
+    char *p = buf + my_strlen(buf);
+    
+    if (hex_val != 0xFFFFFFFFFFFFFFFFULL) {  // Special marker for "no hex value"
+        my_strcpy(p, "0x");
+        p += 2;
+        format_hex(p, hex_val);
+        p += 16;
+    }
+    
+    my_strcpy(p, suffix);
+}
+
+// Dual logging: ASL (macOS Console) + file (/var/69/dyldhook.log)
+static inline void log_message(const char *msg) {
+    // 1. Log to ASL (shows in macOS Console.app)
+    aslmsg asl_msg = asl_new(ASL_TYPE_MSG);
+    asl_set(asl_msg, ASL_KEY_FACILITY, "com.dyldhook");
+    asl_set(asl_msg, ASL_KEY_LEVEL, "3");  // Error level for visibility
+    asl_log(NULL, asl_msg, ASL_LEVEL_ERR, "%s", msg);
+    asl_free(asl_msg);
+    
+    // 2. Log to file (/var/69/dyldhook.log)
+    if (g_logfd < 0) {
+        // Open log file (create if doesn't exist, append mode)
+        g_logfd = open("/var/69/dyldhook.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+    
+    if (g_logfd >= 0) {
+        write_to_fd(g_logfd, msg);
+        write_to_fd(g_logfd, "\n");
+        fsync(g_logfd);  // Force write to disk immediately
+    }
+    
+    // 3. Also log to stderr for compatibility
+    write_to_fd(2, msg);
+    write_to_fd(2, "\n");
+}
 
 // Declare the original vm_allocate trampoline from main.S (renamed from vm_allocate to _orig_vm_allocate)
 extern kern_return_t _orig_vm_allocate(vm_map_t target, vm_address_t *address, vm_size_t size, int flags);
@@ -81,9 +182,10 @@ kern_return_t vm_allocate(vm_map_t target_task, vm_address_t *address, vm_size_t
 {
     // Only intercept for jailbroken processes with systemhook
     if (jbinfo_is_checked_in() && gLoadingSystemhook && (flags & VM_FLAGS_ANYWHERE)) {
-        if (gDyldHookLog) {
-            _simple_dprintf(2, "[dyldhook] FORCING HIGH MEMORY for systemhook: size=0x%llx\n", (unsigned long long)size);
-        }
+        char logbuf[256];
+        
+        build_log_message(logbuf, "[dyldhook] FORCING HIGH MEMORY for systemhook: size=", (unsigned long long)size, "");
+        log_message(logbuf);
 
         // NO FALLBACK - Loop through high memory range with VM_FLAGS_FIXED
         mach_vm_address_t try_addr = HIGH_MEMORY_START;
@@ -108,9 +210,10 @@ kern_return_t vm_allocate(vm_map_t target_task, vm_address_t *address, vm_size_t
             
             if (kr == KERN_SUCCESS) {
                 *address = (vm_address_t)test_addr;
-                if (gDyldHookLog) {
-                    _simple_dprintf(2, "[dyldhook] *** HIGH MEMORY SUCCESS at 0x%llx ***\n", (unsigned long long)test_addr);
-                }
+                
+                build_log_message(logbuf, "[dyldhook] *** HIGH MEMORY SUCCESS at ", (unsigned long long)test_addr, " ***");
+                log_message(logbuf);
+                
                 return KERN_SUCCESS;
             }
             
@@ -119,9 +222,21 @@ kern_return_t vm_allocate(vm_map_t target_task, vm_address_t *address, vm_size_t
         }
         
         // PANIC - Cannot allocate in high memory range
-        _simple_dprintf(2, "[dyldhook] ***FATAL*** Cannot allocate systemhook in high memory range 0x%llx-0x%llx\n",
-                       HIGH_MEMORY_START, HIGH_MEMORY_END);
-        _simple_dprintf(2, "[dyldhook] Last error: kr=%d\n", kr);
+        build_log_message(logbuf, "[dyldhook] ***FATAL*** Cannot allocate systemhook in high memory range ", HIGH_MEMORY_START, "-");
+        log_message(logbuf);
+        
+        char hexbuf[32];
+        format_hex(hexbuf, HIGH_MEMORY_END);
+        my_strcpy(logbuf, "[dyldhook] ***FATAL*** Range end: 0x");
+        my_strcpy(logbuf + my_strlen(logbuf), hexbuf);
+        log_message(logbuf);
+        
+        char decbuf[16];
+        format_dec(decbuf, kr);
+        my_strcpy(logbuf, "[dyldhook] Last error: kr=");
+        my_strcpy(logbuf + my_strlen(logbuf), decbuf);
+        log_message(logbuf);
+        
         halt_process();  // HARD STOP - NO FALLBACK
     }
     
