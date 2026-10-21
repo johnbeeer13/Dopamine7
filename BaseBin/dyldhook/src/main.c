@@ -79,6 +79,22 @@ static inline int my_close_log(int fd) {
     return (int)result;
 }
 
+// dup() syscall wrapper
+static inline int my_dup_log(int oldfd) {
+    register long syscall_num __asm__("x16") = 41; // SYS_dup
+    register int x0 __asm__("x0") = oldfd;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0)
+        : "memory"
+    );
+    
+    return (int)result;
+}
+
 // Simple string copy
 static inline void my_strcpy_log(char *dst, const char *src) {
     while (*src) {
@@ -95,14 +111,25 @@ static inline size_t my_strlen_log(const char *s) {
 }
 
 // Filesystem-only logging helper (no stderr to avoid EXC_GUARD, no os_log to avoid external symbols)
+// CRITICAL: Avoid closing low fds (0,1,2) which may be guarded by the system
 static void fs_log(const char *msg) {
     // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
     int fd = my_open_log("/var/69/dyldhook_systemhook_loading.log", 0x0001 | 0x0200 | 0x0008, 0644);
     if (fd >= 0) {
-        my_write_log(fd, msg, my_strlen_log(msg));
-        my_write_log(fd, "\n", 1);
-        my_fsync_log(fd);
-        my_close_log(fd);
+        // CRITICAL FIX: If we got fd 0, 1, or 2 (stdin/stdout/stderr range),
+        // dup() it to a higher number to avoid closing guarded system fds
+        if (fd <= 2) {
+            int new_fd = my_dup_log(fd);  // Get a higher fd number
+            my_close_log(fd);  // Close the low number (this is safe - it's our newly opened file)
+            fd = new_fd;  // Use the higher number from here on
+        }
+        
+        if (fd >= 0) {
+            my_write_log(fd, msg, my_strlen_log(msg));
+            my_write_log(fd, "\n", 1);
+            my_fsync_log(fd);
+            my_close_log(fd);  // Now safe to close - it's fd >= 3
+        }
     }
 }
 

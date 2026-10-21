@@ -142,16 +142,43 @@ static inline void build_log_message(char *buf, const char *prefix, unsigned lon
     my_strcpy(p, suffix);
 }
 
+// dup() syscall wrapper
+static inline int my_dup(int oldfd) {
+    register long syscall_num __asm__("x16") = 41; // SYS_dup
+    register int x0 __asm__("x0") = oldfd;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0)
+        : "memory"
+    );
+    
+    return (int)result;
+}
+
 // File-only logging to /var/69/dyldhook_systemhook_loading.log (no stderr to avoid EXC_GUARD)
+// CRITICAL: Avoid closing low fds (0,1,2) which may be guarded by the system
 static inline void log_message(const char *msg) {
     // Log to file - open, write, fsync, CLOSE each time (atomic logging)
     // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
     int fd = my_open("/var/69/dyldhook_systemhook_loading.log", 0x0001 | 0x0200 | 0x0008, 0644);
     if (fd >= 0) {
-        my_write(fd, msg, my_strlen(msg));
-        my_write(fd, "\n", 1);
-        my_fsync(fd);  // Force write to disk immediately
-        my_close(fd);  // CLOSE after each write to avoid stale fd issues
+        // CRITICAL FIX: If we got fd 0, 1, or 2 (stdin/stdout/stderr range),
+        // dup() it to a higher number to avoid closing guarded system fds
+        if (fd <= 2) {
+            int new_fd = my_dup(fd);  // Get a higher fd number
+            my_close(fd);  // Close the low number (this is safe - it's our newly opened file)
+            fd = new_fd;  // Use the higher number from here on
+        }
+        
+        if (fd >= 0) {
+            my_write(fd, msg, my_strlen(msg));
+            my_write(fd, "\n", 1);
+            my_fsync(fd);  // Force write to disk immediately
+            my_close(fd);  // Now safe to close - it's fd >= 3
+        }
     }
 }
 

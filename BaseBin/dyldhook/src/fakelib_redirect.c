@@ -83,6 +83,22 @@ static inline int my_close_dlopen(int fd) {
     return (int)result;
 }
 
+// dup() syscall wrapper
+static inline int my_dup_dlopen(int oldfd) {
+    register long syscall_num __asm__("x16") = 41; // SYS_dup
+    register int x0 __asm__("x0") = oldfd;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0)
+        : "memory"
+    );
+    
+    return (int)result;
+}
+
 // Simple string functions
 static inline void my_strcpy_dlopen(char *dst, const char *src) {
     while (*src) {
@@ -97,20 +113,28 @@ static inline size_t my_strlen_dlopen(const char *s) {
     return p - s;
 }
 
-// Filesystem-only logging helper
+// Filesystem-only logging helper (no stderr to avoid EXC_GUARD)
+// CRITICAL: Avoid closing low fds (0,1,2) which may be guarded by the system
 static void fs_log_dlopen(const char *msg) {
     // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
     int fd = my_open_dlopen("/var/69/dyldhook_systemhook_loading.log", 0x0001 | 0x0200 | 0x0008, 0644);
     if (fd >= 0) {
-        my_write_dlopen(fd, msg, my_strlen_dlopen(msg));
-        my_write_dlopen(fd, "\n", 1);
-        my_fsync_dlopen(fd);
-        my_close_dlopen(fd);
+        // CRITICAL FIX: If we got fd 0, 1, or 2 (stdin/stdout/stderr range),
+        // dup() it to a higher number to avoid closing guarded system fds
+        if (fd <= 2) {
+            int new_fd = my_dup_dlopen(fd);  // Get a higher fd number
+            my_close_dlopen(fd);  // Close the low number (this is safe - it's our newly opened file)
+            fd = new_fd;  // Use the higher number from here on
+        }
+        
+        if (fd >= 0) {
+            my_write_dlopen(fd, msg, my_strlen_dlopen(msg));
+            my_write_dlopen(fd, "\n", 1);
+            my_fsync_dlopen(fd);
+            my_close_dlopen(fd);  // Now safe to close - it's fd >= 3
+        }
     }
-    
-    // Also log to stderr
-    my_write_dlopen(2, msg, my_strlen_dlopen(msg));
-    my_write_dlopen(2, "\n", 1);
+    // REMOVED: NO stderr writes during dlopen - causes EXC_GUARD crash
 }
 
 // When hiding the jailbreak in Dopamine settings, a lot of processes will crash due to the /usr/lib mount disappearing
