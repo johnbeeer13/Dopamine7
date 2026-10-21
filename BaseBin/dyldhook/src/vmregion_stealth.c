@@ -7,8 +7,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <dlfcn.h>
+#include <mach-o/dyld.h>
 
-#include "machomerger_hook.h"
 #include "dyld_jbinfo.h"
 #include "dyld.h"
 
@@ -40,6 +41,29 @@ static bool should_hide_dylib(const char *path)
             strstr(path, "libjailbreak.dylib") != NULL ||
             strstr(path, "libchoma.dylib") != NULL ||
             strstr(path, "libellekit.dylib") != NULL);
+}
+
+// Get image size from mach header
+static vm_size_t get_image_size(vm_address_t addr)
+{
+    const struct mach_header_64 *mh = (const struct mach_header_64 *)addr;
+    if (!mh || mh->magic != MH_MAGIC_64) return 0;
+
+    const struct load_command *lc = (const struct load_command *)(mh + 1);
+    vm_size_t total_size = 0;
+
+    for (uint32_t i = 0; i < mh->ncmds; i++) {
+        if (lc->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *seg = (const struct segment_command_64 *)lc;
+            vm_address_t end = seg->vmaddr + seg->vmsize;
+            if (end > total_size) {
+                total_size = end;
+            }
+        }
+        lc = (const struct load_command *)((uint8_t *)lc + lc->cmdsize);
+    }
+
+    return total_size;
 }
 
 // Remap existing library to stealth region
@@ -95,66 +119,37 @@ static kern_return_t remap_to_stealth_region(vm_address_t original_addr, vm_size
     return KERN_SUCCESS;
 }
 
-// Hook dyld's image loading to detect when jailbreak dylibs are mapped
-extern void ORIG(_ZN5dyld44APIs13addDyldImageEPKN5dyld38MachOAnalyzerEPKNS0_11mach_headerEPKcb)(
-    uintptr_t self, void *ma, void *mh, const char *path, bool prebound);
-
-void HOOK(_ZN5dyld44APIs13addDyldImageEPKN5dyld38MachOAnalyzerEPKNS0_11mach_headerEPKcb)(
-    uintptr_t self, void *ma, void *mh, const char *path, bool prebound)
-{
-    // Call original first
-    ORIG(_ZN5dyld44APIs13addDyldImageEPKN5dyld38MachOAnalyzerEPKNS0_11mach_headerEPKcb)(self, ma, mh, path, prebound);
-
-    // Only apply stealth remapping if jailbreak hiding is enabled
-    if (!jbinfo_is_checked_in() || !jbinfo_is_hide_enabled()) {
+// Callback for dyld image loading
+static void vmregion_stealth_image_callback(const struct mach_header* mh, intptr_t vmaddr_slide) {
+    // Only remap if hiding is enabled
+    if (!jbinfo_is_hide_enabled()) {
         return;
     }
+    
+    // Get the image path from the mach header
+    const char* path = NULL;
+    Dl_info info;
+    if (dladdr(mh, &info) && info.dli_fname) {
+        path = info.dli_fname;
+    }
+    
+    if (!path) return;
 
+    // Check if this is a jailbreak dylib
     if (should_hide_dylib(path)) {
-        // Find all VM regions for this library
-        vm_address_t address = (vm_address_t)mh;
-        vm_size_t size;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t object_name;
-
-        kern_return_t kr = vm_region_64(mach_task_self_, &address, &size,
-                                        VM_REGION_BASIC_INFO_64,
-                                        (vm_region_info_t)&info, &count, &object_name);
-
-        if (kr == KERN_SUCCESS) {
-            // Remap this region to stealth area
-            remap_to_stealth_region(address, size, info.protection);
+        // Get the loaded image's actual address and size
+        vm_address_t original_addr = (vm_address_t)mh + vmaddr_slide;
+        vm_size_t size = get_image_size(original_addr);
+        
+        if (size > 0) {
+            vm_prot_t prot = VM_PROT_READ | VM_PROT_EXECUTE;
+            remap_to_stealth_region(original_addr, size, prot);
         }
     }
 }
 
-// Hook mmap to redirect jailbreak dylibs to stealth region during initial load
-extern void *ORIG(mmap)(void *addr, size_t len, int prot, int flags, int fd, off_t offset);
-void *HOOK(mmap)(void *addr, size_t len, int prot, int flags, int fd, off_t offset)
-{
-    // Check if this is loading a jailbreak dylib by examining fd
-    char path[PATH_MAX];
-    if (fd >= 0 && fcntl(fd, F_GETPATH, path) == 0) {
-        if (jbinfo_is_checked_in() && jbinfo_is_hide_enabled() && should_hide_dylib(path)) {
-            // Force allocation in stealth region
-            vm_address_t stealth_addr = g_next_stealth_addr;
-            void *result = (void *)stealth_addr;
-
-            kern_return_t kr = vm_allocate(mach_task_self_, &stealth_addr, len, VM_FLAGS_FIXED);
-            if (kr == KERN_SUCCESS) {
-                // Read file content directly into stealth memory
-                lseek(fd, offset, SEEK_SET);
-                read(fd, (void *)stealth_addr, len);
-                vm_protect(mach_task_self_, stealth_addr, len, FALSE, prot);
-
-                g_next_stealth_addr = stealth_addr + len;
-                g_next_stealth_addr = (g_next_stealth_addr + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-
-                return (void *)stealth_addr;
-            }
-        }
-    }
-
-    return ORIG(mmap)(addr, len, prot, flags, fd, offset);
+// Constructor to register our callback
+__attribute__((constructor))
+static void vmregion_stealth_init(void) {
+    _dyld_register_func_for_add_image(vmregion_stealth_image_callback);
 }
