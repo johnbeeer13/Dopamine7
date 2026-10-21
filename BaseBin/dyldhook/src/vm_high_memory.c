@@ -2,10 +2,6 @@
 #include <mach/vm_map.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <asl.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <string.h>
 
 // External functions
 extern bool jbinfo_is_checked_in(void);
@@ -16,18 +12,66 @@ extern bool gLoadingSystemhook;
 // Global log file descriptor (opened once, reused)
 static int g_logfd = -1;
 
+// Forward declare syscall wrappers to avoid external dependencies
+static inline int my_open(const char *path, int flags, int mode);
+static inline ssize_t my_write(int fd, const void *buf, size_t count);
+static inline int my_fsync(int fd);
+
+// Syscall wrappers - no external dependencies
+static inline int my_open(const char *path, int flags, int mode) {
+    register long syscall_num __asm__("x16") = 5; // SYS_open
+    register const char *x0 __asm__("x0") = path;
+    register int x1 __asm__("x1") = flags;
+    register int x2 __asm__("x2") = mode;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0), "r"(x1), "r"(x2)
+        : "memory"
+    );
+    
+    return (int)result;
+}
+
+static inline ssize_t my_write(int fd, const void *buf, size_t count) {
+    register long syscall_num __asm__("x16") = 4; // SYS_write
+    register int x0 __asm__("x0") = fd;
+    register const void *x1 __asm__("x1") = buf;
+    register size_t x2 __asm__("x2") = count;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0), "r"(x1), "r"(x2)
+        : "memory"
+    );
+    
+    return (ssize_t)result;
+}
+
+static inline int my_fsync(int fd) {
+    register long syscall_num __asm__("x16") = 95; // SYS_fsync
+    register int x0 __asm__("x0") = fd;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0)
+        : "memory"
+    );
+    
+    return (int)result;
+}
+
 // Inline strlen to avoid external dependency
 static inline size_t my_strlen(const char *s) {
     const char *p = s;
     while (*p) p++;
     return p - s;
-}
-
-// Inline write wrapper
-static inline void write_to_fd(int fd, const char *msg) {
-    if (fd >= 0) {
-        write(fd, msg, my_strlen(msg));
-    }
 }
 
 // Simple hex formatter for uint64_t
@@ -84,30 +128,24 @@ static inline void build_log_message(char *buf, const char *prefix, unsigned lon
     my_strcpy(p, suffix);
 }
 
-// Dual logging: ASL (macOS Console) + file (/var/69/dyldhook.log)
+// Dual logging: stderr + file (/var/69/dyldhook.log)
 static inline void log_message(const char *msg) {
-    // 1. Log to ASL (shows in macOS Console.app)
-    aslmsg asl_msg = asl_new(ASL_TYPE_MSG);
-    asl_set(asl_msg, ASL_KEY_FACILITY, "com.dyldhook");
-    asl_set(asl_msg, ASL_KEY_LEVEL, "3");  // Error level for visibility
-    asl_log(NULL, asl_msg, ASL_LEVEL_ERR, "%s", msg);
-    asl_free(asl_msg);
+    // 1. Log to stderr (fd 2) for compatibility
+    my_write(2, msg, my_strlen(msg));
+    my_write(2, "\n", 1);
     
     // 2. Log to file (/var/69/dyldhook.log)
     if (g_logfd < 0) {
         // Open log file (create if doesn't exist, append mode)
-        g_logfd = open("/var/69/dyldhook.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+        // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
+        g_logfd = my_open("/var/69/dyldhook.log", 0x0001 | 0x0200 | 0x0008, 0644);
     }
     
     if (g_logfd >= 0) {
-        write_to_fd(g_logfd, msg);
-        write_to_fd(g_logfd, "\n");
-        fsync(g_logfd);  // Force write to disk immediately
+        my_write(g_logfd, msg, my_strlen(msg));
+        my_write(g_logfd, "\n", 1);
+        my_fsync(g_logfd);  // Force write to disk immediately
     }
-    
-    // 3. Also log to stderr for compatibility
-    write_to_fd(2, msg);
-    write_to_fd(2, "\n");
 }
 
 // Declare the original vm_allocate trampoline from main.S (renamed from vm_allocate to _orig_vm_allocate)
