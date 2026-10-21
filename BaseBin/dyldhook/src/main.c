@@ -9,107 +9,6 @@
 #include "dyld.h"
 #include "dyld_jbinfo.h"
 
-// Syscall wrappers for logging
-static inline int my_open_log(const char *path, int flags, int mode);
-static inline ssize_t my_write_log(int fd, const void *buf, size_t count);
-static inline int my_fsync_log(int fd);
-static inline int my_close_log(int fd);
-
-static inline int my_open_log(const char *path, int flags, int mode) {
-    register long syscall_num __asm__("x16") = 5; // SYS_open
-    register const char *x0 __asm__("x0") = path;
-    register int x1 __asm__("x1") = flags;
-    register int x2 __asm__("x2") = mode;
-    register long result __asm__("x0");
-    
-    __asm__ volatile(
-        "svc #0x80\n"
-        : "=r"(result)
-        : "r"(syscall_num), "r"(x0), "r"(x1), "r"(x2)
-        : "memory"
-    );
-    
-    return (int)result;
-}
-
-static inline ssize_t my_write_log(int fd, const void *buf, size_t count) {
-    register long syscall_num __asm__("x16") = 4; // SYS_write
-    register int x0 __asm__("x0") = fd;
-    register const void *x1 __asm__("x1") = buf;
-    register size_t x2 __asm__("x2") = count;
-    register long result __asm__("x0");
-    
-    __asm__ volatile(
-        "svc #0x80\n"
-        : "=r"(result)
-        : "r"(syscall_num), "r"(x0), "r"(x1), "r"(x2)
-        : "memory"
-    );
-    
-    return (ssize_t)result;
-}
-
-static inline int my_fsync_log(int fd) {
-    register long syscall_num __asm__("x16") = 95; // SYS_fsync
-    register int x0 __asm__("x0") = fd;
-    register long result __asm__("x0");
-    
-    __asm__ volatile(
-        "svc #0x80\n"
-        : "=r"(result)
-        : "r"(syscall_num), "r"(x0)
-        : "memory"
-    );
-    
-    return (int)result;
-}
-
-static inline int my_close_log(int fd) {
-    register long syscall_num __asm__("x16") = 6; // SYS_close
-    register int x0 __asm__("x0") = fd;
-    register long result __asm__("x0");
-    
-    __asm__ volatile(
-        "svc #0x80\n"
-        : "=r"(result)
-        : "r"(syscall_num), "r"(x0)
-        : "memory"
-    );
-    
-    return (int)result;
-}
-
-// Simple string copy
-static inline void my_strcpy_log(char *dst, const char *src) {
-    while (*src) {
-        *dst++ = *src++;
-    }
-    *dst = '\0';
-}
-
-// Simple strlen
-static inline size_t my_strlen_log(const char *s) {
-    const char *p = s;
-    while (*p) p++;
-    return p - s;
-}
-
-// Filesystem-only logging helper (no os_log to avoid external symbols)
-static void fs_log(const char *msg) {
-    // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
-    int fd = my_open_log("/var/69/dyldhook_systemhook_loading.log", 0x0001 | 0x0200 | 0x0008, 0644);
-    if (fd >= 0) {
-        my_write_log(fd, msg, my_strlen_log(msg));
-        my_write_log(fd, "\n", 1);
-        my_fsync_log(fd);
-        my_close_log(fd);
-    }
-    
-    // Also log to stderr
-    my_write_log(2, msg, my_strlen_log(msg));
-    my_write_log(2, "\n", 1);
-}
-
 bool gDyldHookLog = false;
 bool gLoadingSystemhook = false;
 
@@ -213,13 +112,10 @@ void mach_init_4real(void)
 
 void dyldhook_init(uintptr_t kernelParams)
 {
-	fs_log("=== dyldhook_init() ENTRY ===");
-	
 	mach_init_4real();
 
 	// If we are in launchd, bail out
 	if (getpid() == 1) {
-		fs_log("=== dyldhook_init() EXIT - launchd bail out ===");
 		return;
 	}
 
@@ -227,12 +123,9 @@ void dyldhook_init(uintptr_t kernelParams)
 	uintptr_t argc = *(uintptr_t *)(kernelParams + sizeof(void *));
 	char **argv = (char **)(kernelParams + sizeof(void *) + sizeof(argc));
 	char **envp = (char **)(kernelParams + sizeof(void *) + sizeof(argc) + (sizeof(const char *) * argc) + sizeof(void *));
-	
-	fs_log("Parsed argc/argv/envp");
 
 	if (_simple_getenv(envp, "DYLD_HOOK_PRINT") != NULL) {
 		gDyldHookLog = true;
-		fs_log("DYLD_HOOK_PRINT enabled");
 	}
 
 	if (_simple_getenv(envp, "DYLD_HOOK_SETUID") != NULL) {
@@ -291,18 +184,6 @@ void dyldhook_init(uintptr_t kernelParams)
 		setuid(uid);
 		setreuid(ruid, -1);
 
-		// if (gDyldHookLog) {
-		// 	uid_t uid  = getuid();
-		// 	uid_t euid = geteuid();
-		// 	gid_t gid  = getgid();
-		// 	gid_t egid = getegid();
-
-		// 	_simple_dprintf(2, "PID  : %d\n", (int)getpid());
-		// 	_simple_dprintf(2, "PPID : %d\n", (int)getppid());
-		// 	_simple_dprintf(2, "uid  : real=%d  effective=%d\n", (int)uid,  (int)euid);
-		// 	_simple_dprintf(2, "gid  : real=%d  effective=%d\n", (int)gid,  (int)egid);
-		// }
-
 		char r = 0x42;
 		write(fd, &r, sizeof(r));
 
@@ -312,46 +193,26 @@ void dyldhook_init(uintptr_t kernelParams)
 	// If DYLD_INSERT_LIBRARIES is not set or does not contain systemhook, bail out
 	const char *insertLibrariesVar = _simple_getenv(envp, "DYLD_INSERT_LIBRARIES");
 	
-	char logbuf[512];
-	my_strcpy_log(logbuf, "Checking DYLD_INSERT_LIBRARIES: ");
-	if (insertLibrariesVar) {
-		my_strcpy_log(logbuf + my_strlen_log(logbuf), insertLibrariesVar);
-	} else {
-		my_strcpy_log(logbuf + my_strlen_log(logbuf), "(null)");
-	}
-	fs_log(logbuf);
-	
 	if (!insertLibrariesVar) {
 		if (gDyldHookLog) {
 			_simple_dprintf(2, "Not checking in, DYLD_INSERT_LIBRARIES was not found\n");
 		}
-		fs_log("=== dyldhook_init() EXIT - No DYLD_INSERT_LIBRARIES ===");
 		return;		
 	}
 	if (!strstr(insertLibrariesVar, "/systemhook.dylib")) {
 		if (gDyldHookLog) {
 			_simple_dprintf(2, "Not checking in, no systemhook found in DYLD_INSERT_LIBRARIES (%s)\n", insertLibrariesVar);
 		}
-		fs_log("=== dyldhook_init() EXIT - No systemhook in DYLD_INSERT_LIBRARIES ===");
 		return;
 	}
-	
-	fs_log("*** SYSTEMHOOK DETECTED in DYLD_INSERT_LIBRARIES ***");
-	my_strcpy_log(logbuf, "*** Full path: ");
-	my_strcpy_log(logbuf + my_strlen_log(logbuf), insertLibrariesVar);
-	my_strcpy_log(logbuf + my_strlen_log(logbuf), " ***");
-	fs_log(logbuf);
 
 	// Enable high memory allocation for systemhook loading
 	gLoadingSystemhook = true;
-	fs_log("*** gLoadingSystemhook = TRUE - mmap hook ACTIVATED ***");
 	
 	if (gDyldHookLog) {
 		_simple_dprintf(2, "Enabled high memory allocation for systemhook\n");
 	}
 
 	// If all is well, do check-in right here before dyld_start!
-	fs_log("Calling dyldhook_perform_checkin()...");
 	dyldhook_perform_checkin();
-	fs_log("=== dyldhook_init() EXIT - checkin complete ===");
 }
