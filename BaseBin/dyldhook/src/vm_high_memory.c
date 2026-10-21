@@ -180,6 +180,9 @@ static inline bool is_loading_systemhook(void) {
     return gLoadingSystemhook;
 }
 
+// NOTE: Function above is kept for compatibility but not used.
+// The mmap hook now ONLY checks gLoadingSystemhook directly.
+
 // Target high memory range: 0x7000000000 - 0x7FFFFFFFFFFF
 #define HIGH_MEMORY_START  0x7000000000ULL
 #define HIGH_MEMORY_END    0x7FFFFFFFFFULL
@@ -188,9 +191,9 @@ static inline bool is_loading_systemhook(void) {
 // Override mmap - dyld will call THIS instead of the original
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 {
-    // Only intercept for jailbroken processes with systemhook loading
+    // Only intercept when systemhook is being loaded
     // Detect dylib segment mapping: MAP_PRIVATE + MAP_ANONYMOUS (or file-backed with fd >= 0)
-    if (jbinfo_is_checked_in() && gLoadingSystemhook) {
+    if (gLoadingSystemhook) {
         char logbuf[256];
         
         // Log the mmap() call parameters
