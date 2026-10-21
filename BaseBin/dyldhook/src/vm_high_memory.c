@@ -128,17 +128,18 @@ static inline void build_log_message(char *buf, const char *prefix, unsigned lon
     my_strcpy(p, suffix);
 }
 
-// Dual logging: stderr + file (/var/69/dyldhook.log)
+// Dual logging: stderr + file (/var/tmp/dyldhook.log)
 static inline void log_message(const char *msg) {
     // 1. Log to stderr (fd 2) for compatibility
     my_write(2, msg, my_strlen(msg));
     my_write(2, "\n", 1);
     
-    // 2. Log to file (/var/69/dyldhook.log)
+    // 2. Log to file (/var/tmp/dyldhook.log)
+    // /var/tmp always exists and is writable, unlike /var/69
     if (g_logfd < 0) {
         // Open log file (create if doesn't exist, append mode)
         // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
-        g_logfd = my_open("/var/69/dyldhook.log", 0x0001 | 0x0200 | 0x0008, 0644);
+        g_logfd = my_open("/var/tmp/dyldhook.log", 0x0001 | 0x0200 | 0x0008, 0644);
     }
     
     if (g_logfd >= 0) {
