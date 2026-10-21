@@ -8,34 +8,109 @@
 #include <limits.h>
 #include <stdio.h>
 #include <sys/mman.h>
-#include <os/log.h>
 
 #include "machomerger_hook.h"
 #include "dyld_jbinfo.h"
 #include "dyld.h"
 
-// Dual logging helper - filesystem + console
-static void dual_log_dlopen(const char *format, ...) __attribute__((format(printf, 1, 2)));
+// Syscall wrappers for logging
+static inline int my_open_dlopen(const char *path, int flags, int mode);
+static inline ssize_t my_write_dlopen(int fd, const void *buf, size_t count);
+static inline int my_fsync_dlopen(int fd);
+static inline int my_close_dlopen(int fd);
 
-static void dual_log_dlopen(const char *format, ...) {
-	char buffer[1024];
-	
-	va_list args;
-	va_start(args, format);
-	vsnprintf(buffer, sizeof(buffer), format, args);
-	va_end(args);
-	
-	// 1. Log to console (os_log)
-	os_log(OS_LOG_DEFAULT, "[dyldhook_dlopen] %{public}s", buffer);
-	
-	// 2. Log to filesystem
-	int fd = open("/var/69/dyldhook_systemhook_loading.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
-	if (fd >= 0) {
-		write(fd, buffer, strlen(buffer));
-		write(fd, "\n", 1);
-		fsync(fd);
-		close(fd);
-	}
+static inline int my_open_dlopen(const char *path, int flags, int mode) {
+    register long syscall_num __asm__("x16") = 5; // SYS_open
+    register const char *x0 __asm__("x0") = path;
+    register int x1 __asm__("x1") = flags;
+    register int x2 __asm__("x2") = mode;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0), "r"(x1), "r"(x2)
+        : "memory"
+    );
+    
+    return (int)result;
+}
+
+static inline ssize_t my_write_dlopen(int fd, const void *buf, size_t count) {
+    register long syscall_num __asm__("x16") = 4; // SYS_write
+    register int x0 __asm__("x0") = fd;
+    register const void *x1 __asm__("x1") = buf;
+    register size_t x2 __asm__("x2") = count;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0), "r"(x1), "r"(x2)
+        : "memory"
+    );
+    
+    return (ssize_t)result;
+}
+
+static inline int my_fsync_dlopen(int fd) {
+    register long syscall_num __asm__("x16") = 95; // SYS_fsync
+    register int x0 __asm__("x0") = fd;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0)
+        : "memory"
+    );
+    
+    return (int)result;
+}
+
+static inline int my_close_dlopen(int fd) {
+    register long syscall_num __asm__("x16") = 6; // SYS_close
+    register int x0 __asm__("x0") = fd;
+    register long result __asm__("x0");
+    
+    __asm__ volatile(
+        "svc #0x80\n"
+        : "=r"(result)
+        : "r"(syscall_num), "r"(x0)
+        : "memory"
+    );
+    
+    return (int)result;
+}
+
+// Simple string functions
+static inline void my_strcpy_dlopen(char *dst, const char *src) {
+    while (*src) {
+        *dst++ = *src++;
+    }
+    *dst = '\0';
+}
+
+static inline size_t my_strlen_dlopen(const char *s) {
+    const char *p = s;
+    while (*p) p++;
+    return p - s;
+}
+
+// Filesystem-only logging helper
+static void fs_log_dlopen(const char *msg) {
+    // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
+    int fd = my_open_dlopen("/var/69/dyldhook_systemhook_loading.log", 0x0001 | 0x0200 | 0x0008, 0644);
+    if (fd >= 0) {
+        my_write_dlopen(fd, msg, my_strlen_dlopen(msg));
+        my_write_dlopen(fd, "\n", 1);
+        my_fsync_dlopen(fd);
+        my_close_dlopen(fd);
+    }
+    
+    // Also log to stderr
+    my_write_dlopen(2, msg, my_strlen_dlopen(msg));
+    my_write_dlopen(2, "\n", 1);
 }
 
 // When hiding the jailbreak in Dopamine settings, a lot of processes will crash due to the /usr/lib mount disappearing
@@ -51,20 +126,29 @@ extern void *ORIG(_ZN5dyld44APIs11dlopen_fromEPKciPv)(uintptr_t self, const char
 void *HOOK(_ZN5dyld44APIs11dlopen_fromEPKciPv)(uintptr_t self, const char* path, int mode, void* addressInCaller)
 {
 	// Log every dlopen_from call
-	dual_log_dlopen("=== dlopen_from() INTERCEPTED ===");
-	dual_log_dlopen("  path: %s", path ? path : "(null)");
-	dual_log_dlopen("  mode: 0x%x", mode);
-	dual_log_dlopen("  addressInCaller: %p", addressInCaller);
+	fs_log_dlopen("=== dlopen_from() INTERCEPTED ===");
+	
+	char logbuf[512];
+	my_strcpy_dlopen(logbuf, "  path: ");
+	if (path) {
+		my_strcpy_dlopen(logbuf + my_strlen_dlopen(logbuf), path);
+	} else {
+		my_strcpy_dlopen(logbuf + my_strlen_dlopen(logbuf), "(null)");
+	}
+	fs_log_dlopen(logbuf);
 	
 	// Check if this is systemhook loading
 	if (path && strstr(path, "systemhook")) {
-		dual_log_dlopen("*** SYSTEMHOOK DETECTED in dlopen_from() ***");
-		dual_log_dlopen("*** Full path: %s ***", path);
+		fs_log_dlopen("*** SYSTEMHOOK DETECTED in dlopen_from() ***");
+		my_strcpy_dlopen(logbuf, "*** Full path: ");
+		my_strcpy_dlopen(logbuf + my_strlen_dlopen(logbuf), path);
+		my_strcpy_dlopen(logbuf + my_strlen_dlopen(logbuf), " ***");
+		fs_log_dlopen(logbuf);
 	}
 	
 	// Only redirect to .fakelib if hide jailbreak is actually enabled
 	if (jbinfo_is_checked_in() && jbinfo_is_hide_enabled()) {
-		dual_log_dlopen("  jbinfo: checked_in=TRUE, hide_enabled=TRUE");
+		fs_log_dlopen("  jbinfo: checked_in=TRUE, hide_enabled=TRUE");
 		if (!access(path, F_OK)) {
 			const char *orgPrefix = "/usr/lib/";
     		size_t orgPrefixLen = strlen(orgPrefix);
@@ -80,14 +164,16 @@ void *HOOK(_ZN5dyld44APIs11dlopen_fromEPKciPv)(uintptr_t self, const char* path,
 					strlcat(redirPath, middle, redirPathSize);
 					strlcat(redirPath, suffix, redirPathSize);
 					
-					dual_log_dlopen("  REDIRECTING: %s -> %s", path, redirPath);
+					my_strcpy_dlopen(logbuf, "  REDIRECTING to: ");
+					my_strcpy_dlopen(logbuf + my_strlen_dlopen(logbuf), redirPath);
+					fs_log_dlopen(logbuf);
 
 					void *handle = ORIG(_ZN5dyld44APIs11dlopen_fromEPKciPv)(self, redirPath, mode, addressInCaller);
 					if (handle) {
-						dual_log_dlopen("  REDIRECT SUCCESS: handle=%p", handle);
+						fs_log_dlopen("  REDIRECT SUCCESS");
 						return handle;
 					} else {
-						dual_log_dlopen("  REDIRECT FAILED, falling through to original path");
+						fs_log_dlopen("  REDIRECT FAILED, falling through to original path");
 					}
 
 					// If anything failed, fall through
@@ -95,13 +181,16 @@ void *HOOK(_ZN5dyld44APIs11dlopen_fromEPKciPv)(uintptr_t self, const char* path,
 			}
 		}
 	} else {
-		dual_log_dlopen("  jbinfo: checked_in=%d, hide_enabled=%d", 
-			jbinfo_is_checked_in(), jbinfo_is_hide_enabled());
+		fs_log_dlopen("  jbinfo: checked_in or hide_enabled is FALSE");
 	}
 	
-	dual_log_dlopen("  Calling ORIG(dlopen_from) with path: %s", path);
+	fs_log_dlopen("  Calling ORIG(dlopen_from)");
 	void *result = ORIG(_ZN5dyld44APIs11dlopen_fromEPKciPv)(self, path, mode, addressInCaller);
-	dual_log_dlopen("  ORIG(dlopen_from) returned: %p", result);
+	if (result) {
+		fs_log_dlopen("  ORIG(dlopen_from) SUCCESS");
+	} else {
+		fs_log_dlopen("  ORIG(dlopen_from) FAILED");
+	}
 
 	return result;
 }

@@ -3,7 +3,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <sys/mman.h>
-#include <os/log.h>
 
 // External functions
 extern bool jbinfo_is_checked_in(void);
@@ -130,16 +129,13 @@ static inline void build_log_message(char *buf, const char *prefix, unsigned lon
     my_strcpy(p, suffix);
 }
 
-// Dual logging: stderr + file (/var/69/dyldhook_systemhook_loading.log) + console
+// Dual logging: stderr + file (/var/69/dyldhook_systemhook_loading.log)
 static inline void log_message(const char *msg) {
     // 1. Log to stderr (fd 2) for compatibility
     my_write(2, msg, my_strlen(msg));
     my_write(2, "\n", 1);
     
-    // 2. Log to console (os_log)
-    os_log(OS_LOG_DEFAULT, "[dyldhook_mmap] %{public}s", msg);
-    
-    // 3. Log to file (/var/69/dyldhook_systemhook_loading.log)
+    // 2. Log to file (/var/69/dyldhook_systemhook_loading.log)
     if (g_logfd < 0) {
         // Open log file (create if doesn't exist, append mode)
         // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
