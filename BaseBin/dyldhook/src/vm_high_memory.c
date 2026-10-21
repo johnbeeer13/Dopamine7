@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <sys/mman.h>
+#include <os/log.h>
 
 // External functions
 extern bool jbinfo_is_checked_in(void);
@@ -129,17 +130,20 @@ static inline void build_log_message(char *buf, const char *prefix, unsigned lon
     my_strcpy(p, suffix);
 }
 
-// Dual logging: stderr + file (/var/69/dyldhook.log)
+// Dual logging: stderr + file (/var/69/dyldhook_systemhook_loading.log) + console
 static inline void log_message(const char *msg) {
     // 1. Log to stderr (fd 2) for compatibility
     my_write(2, msg, my_strlen(msg));
     my_write(2, "\n", 1);
     
-    // 2. Log to file (/var/69/dyldhook.log)
+    // 2. Log to console (os_log)
+    os_log(OS_LOG_DEFAULT, "[dyldhook_mmap] %{public}s", msg);
+    
+    // 3. Log to file (/var/69/dyldhook_systemhook_loading.log)
     if (g_logfd < 0) {
         // Open log file (create if doesn't exist, append mode)
         // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
-        g_logfd = my_open("/var/69/dyldhook.log", 0x0001 | 0x0200 | 0x0008, 0644);
+        g_logfd = my_open("/var/69/dyldhook_systemhook_loading.log", 0x0001 | 0x0200 | 0x0008, 0644);
     }
     
     if (g_logfd >= 0) {
@@ -197,10 +201,10 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         char logbuf[256];
         
         // Log the mmap() call parameters
-        build_log_message(logbuf, "[dyldhook] mmap() intercepted: addr=", (unsigned long long)addr, ", length=");
+        build_log_message(logbuf, "[dyldhook_mmap] *** INTERCEPTED (gLoadingSystemhook=TRUE) *** addr=", (unsigned long long)addr, ", length=");
         log_message(logbuf);
         
-        build_log_message(logbuf, "[dyldhook]   flags=", (unsigned long long)flags, ", fd=");
+        build_log_message(logbuf, "[dyldhook_mmap]   flags=", (unsigned long long)flags, ", fd=");
         log_message(logbuf);
         
         format_dec(logbuf, fd);
@@ -214,7 +218,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         bool is_dylib_mapping = (flags & MAP_PRIVATE) && (addr == NULL || addr == 0);
         
         if (is_dylib_mapping) {
-            build_log_message(logbuf, "[dyldhook] FORCING HIGH MEMORY for systemhook: length=", (unsigned long long)length, "");
+            build_log_message(logbuf, "[dyldhook_mmap] *** DYLIB SEGMENT DETECTED *** FORCING HIGH MEMORY: length=", (unsigned long long)length, "");
             log_message(logbuf);
 
             // NO FALLBACK - Loop through high memory range with MAP_FIXED
@@ -233,7 +237,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
                 );
                 
                 if (result != MAP_FAILED && result == (void *)try_addr) {
-                    build_log_message(logbuf, "[dyldhook] *** HIGH MEMORY SUCCESS at ", (unsigned long long)try_addr, " ***");
+                    build_log_message(logbuf, "[dyldhook_mmap] *** HIGH MEMORY SUCCESS at ", (unsigned long long)try_addr, " ***");
                     log_message(logbuf);
                     
                     return result;
@@ -245,20 +249,23 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
             }
             
             // PANIC - Cannot allocate in high memory range
-            build_log_message(logbuf, "[dyldhook] ***FATAL*** Cannot mmap() systemhook in high memory range ", HIGH_MEMORY_START, "-");
+            build_log_message(logbuf, "[dyldhook_mmap] ***FATAL*** Cannot mmap() systemhook in high memory range ", HIGH_MEMORY_START, "-");
             log_message(logbuf);
             
             char hexbuf[32];
             format_hex(hexbuf, HIGH_MEMORY_END);
-            my_strcpy(logbuf, "[dyldhook] ***FATAL*** Range end: 0x");
+            my_strcpy(logbuf, "[dyldhook_mmap] ***FATAL*** Range end: 0x");
             my_strcpy(logbuf + my_strlen(logbuf), hexbuf);
             log_message(logbuf);
             
-            build_log_message(logbuf, "[dyldhook] Last attempted address: ", try_addr - ALLOCATION_STEP, "");
+            build_log_message(logbuf, "[dyldhook_mmap] Last attempted address: ", try_addr - ALLOCATION_STEP, "");
             log_message(logbuf);
             
             // Return MAP_FAILED to signal error to dyld
             return MAP_FAILED;
+        } else {
+            build_log_message(logbuf, "[dyldhook_mmap] Non-dylib mapping (gLoadingSystemhook=TRUE but not dylib segment), passing through to _orig_mmap", 0xFFFFFFFFFFFFFFFFULL, "");
+            log_message(logbuf);
         }
     }
     

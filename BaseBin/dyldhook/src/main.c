@@ -5,9 +5,34 @@
 #include <string.h>
 #include <sandbox.h>
 #include <libjailbreak/jbclient_mach.h>
+#include <os/log.h>
 
 #include "dyld.h"
 #include "dyld_jbinfo.h"
+
+// Dual logging helper - filesystem + console
+static void dual_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
+
+static void dual_log(const char *format, ...) {
+	char buffer[1024];
+	
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	
+	// 1. Log to console (os_log)
+	os_log(OS_LOG_DEFAULT, "[dyldhook] %{public}s", buffer);
+	
+	// 2. Log to filesystem
+	int fd = open("/var/69/dyldhook_systemhook_loading.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+	if (fd >= 0) {
+		write(fd, buffer, strlen(buffer));
+		write(fd, "\n", 1);
+		fsync(fd);
+		close(fd);
+	}
+}
 
 bool gDyldHookLog = false;
 bool gLoadingSystemhook = false;
@@ -112,10 +137,13 @@ void mach_init_4real(void)
 
 void dyldhook_init(uintptr_t kernelParams)
 {
+	dual_log("=== dyldhook_init() ENTRY - PID %d ===", getpid());
+	
 	mach_init_4real();
 
 	// If we are in launchd, bail out
 	if (getpid() == 1) {
+		dual_log("=== dyldhook_init() EXIT - launchd bail out ===");
 		return;
 	}
 
@@ -123,9 +151,12 @@ void dyldhook_init(uintptr_t kernelParams)
 	uintptr_t argc = *(uintptr_t *)(kernelParams + sizeof(void *));
 	char **argv = (char **)(kernelParams + sizeof(void *) + sizeof(argc));
 	char **envp = (char **)(kernelParams + sizeof(void *) + sizeof(argc) + (sizeof(const char *) * argc) + sizeof(void *));
+	
+	dual_log("Parsed argc=%lu, argv=%p, envp=%p", (unsigned long)argc, (void*)argv, (void*)envp);
 
 	if (_simple_getenv(envp, "DYLD_HOOK_PRINT") != NULL) {
 		gDyldHookLog = true;
+		dual_log("DYLD_HOOK_PRINT enabled");
 	}
 
 	if (_simple_getenv(envp, "DYLD_HOOK_SETUID") != NULL) {
@@ -204,25 +235,36 @@ void dyldhook_init(uintptr_t kernelParams)
 
 	// If DYLD_INSERT_LIBRARIES is not set or does not contain systemhook, bail out
 	const char *insertLibrariesVar = _simple_getenv(envp, "DYLD_INSERT_LIBRARIES");
+	dual_log("Checking DYLD_INSERT_LIBRARIES: %s", insertLibrariesVar ? insertLibrariesVar : "(null)");
+	
 	if (!insertLibrariesVar) {
 		if (gDyldHookLog) {
 			_simple_dprintf(2, "Not checking in, DYLD_INSERT_LIBRARIES was not found\n");
 		}
+		dual_log("=== dyldhook_init() EXIT - No DYLD_INSERT_LIBRARIES ===");
 		return;		
 	}
 	if (!strstr(insertLibrariesVar, "/systemhook.dylib")) {
 		if (gDyldHookLog) {
 			_simple_dprintf(2, "Not checking in, no systemhook found in DYLD_INSERT_LIBRARIES (%s)\n", insertLibrariesVar);
 		}
+		dual_log("=== dyldhook_init() EXIT - No systemhook in DYLD_INSERT_LIBRARIES ===");
 		return;
 	}
+	
+	dual_log("*** SYSTEMHOOK DETECTED in DYLD_INSERT_LIBRARIES ***");
+	dual_log("*** Full path: %s ***", insertLibrariesVar);
 
 	// Enable high memory allocation for systemhook loading
 	gLoadingSystemhook = true;
+	dual_log("*** gLoadingSystemhook = TRUE - mmap hook ACTIVATED ***");
+	
 	if (gDyldHookLog) {
 		_simple_dprintf(2, "Enabled high memory allocation for systemhook\n");
 	}
 
 	// If all is well, do check-in right here before dyld_start!
+	dual_log("Calling dyldhook_perform_checkin()...");
 	dyldhook_perform_checkin();
+	dual_log("=== dyldhook_init() EXIT - checkin complete ===");
 }
