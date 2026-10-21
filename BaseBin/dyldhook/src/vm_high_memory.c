@@ -1,5 +1,6 @@
 #include <mach/mach.h>
 #include <mach/vm_map.h>
+#include <mach/mach_vm.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
