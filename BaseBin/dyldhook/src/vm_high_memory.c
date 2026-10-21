@@ -2,7 +2,6 @@
 #include <mach/vm_map.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdlib.h>
 
 // External functions
 extern bool jbinfo_is_checked_in(void);
@@ -19,8 +18,9 @@ typedef uint64_t mach_vm_size_t;
 typedef uint64_t mach_vm_offset_t;
 typedef uint64_t memory_object_offset_t;
 
-// Declare mach_vm_map (iOS SDK doesn't expose it in headers but it exists in the kernel)
-extern kern_return_t mach_vm_map(
+// mach_vm_map - Mach trap #4816 on arm64
+// We implement this via inline assembly to avoid external symbol dependency
+static inline kern_return_t my_mach_vm_map(
     vm_map_t target_task,
     mach_vm_address_t *address,
     mach_vm_size_t size,
@@ -32,7 +32,44 @@ extern kern_return_t mach_vm_map(
     vm_prot_t cur_protection,
     vm_prot_t max_protection,
     vm_inherit_t inheritance
-);
+)
+{
+    kern_return_t ret;
+    register mach_vm_address_t *x1 __asm__("x1") = address;
+    register mach_vm_size_t x2 __asm__("x2") = size;
+    register mach_vm_offset_t x3 __asm__("x3") = mask;
+    register int x4 __asm__("x4") = flags;
+    register mach_port_t x5 __asm__("x5") = object;
+    register memory_object_offset_t x6 __asm__("x6") = offset;
+    register boolean_t x7 __asm__("x7") = copy;
+    
+    // Stack parameters
+    register vm_prot_t x8 __asm__("x8") = cur_protection;
+    register vm_prot_t x9 __asm__("x9") = max_protection;
+    register vm_inherit_t x10 __asm__("x10") = inheritance;
+    
+    __asm__ volatile(
+        "mov x0, %[task]\n"
+        "mov x16, #0xffffffffffffffd0\n"  // -48 = mach_vm_map trap number
+        "svc #0x80\n"
+        "mov %[ret], x0\n"
+        : [ret] "=r"(ret)
+        : [task] "r"((mach_port_t)target_task), "r"(x1), "r"(x2), "r"(x3), 
+          "r"(x4), "r"(x5), "r"(x6), "r"(x7), "r"(x8), "r"(x9), "r"(x10)
+        : "x0", "x16", "memory"
+    );
+    
+    return ret;
+}
+
+// Inline halt function to replace abort() - no external dependencies
+static inline void halt_process(void)
+{
+    // Infinite loop - process will hang instead of calling abort()
+    while (1) {
+        __asm__ volatile("wfe");  // Wait for event - low power infinite loop
+    }
+}
 
 // Target high memory range: 0x7000000000 - 0x7FFFFFFFFFFF
 #define HIGH_MEMORY_START  0x7000000000ULL
@@ -55,7 +92,7 @@ kern_return_t vm_allocate(vm_map_t target_task, vm_address_t *address, vm_size_t
         while (try_addr + size <= HIGH_MEMORY_END) {
             mach_vm_address_t test_addr = try_addr;
             
-            kr = mach_vm_map(
+            kr = my_mach_vm_map(
                 target_task,
                 &test_addr,
                 (mach_vm_size_t)size,
@@ -85,7 +122,7 @@ kern_return_t vm_allocate(vm_map_t target_task, vm_address_t *address, vm_size_t
         _simple_dprintf(2, "[dyldhook] ***FATAL*** Cannot allocate systemhook in high memory range 0x%llx-0x%llx\n",
                        HIGH_MEMORY_START, HIGH_MEMORY_END);
         _simple_dprintf(2, "[dyldhook] Last error: kr=%d\n", kr);
-        abort();  // HARD STOP - NO FALLBACK
+        halt_process();  // HARD STOP - NO FALLBACK
     }
     
     // Normal allocation for non-systemhook dylibs - use original trampoline
