@@ -10,8 +10,8 @@ extern bool gDyldHookLog;
 extern int _simple_dprintf(int fd, const char *format, ...);
 extern bool gLoadingSystemhook;
 
-// Import the original libsystem vm_allocate
-extern kern_return_t __kernelrpc_vm_allocate(vm_map_t target, vm_offset_t *address, vm_size_t size, int flags);
+// Declare mach_vm_allocate for fallback (exists in iOS SDK)
+extern kern_return_t mach_vm_allocate(vm_map_t target, mach_vm_address_t *address, mach_vm_size_t size, int flags);
 
 // iOS SDK type definitions for mach_vm functions
 typedef uint64_t mach_vm_address_t;
@@ -89,5 +89,8 @@ kern_return_t vm_allocate(vm_map_t target_task, vm_address_t *address, vm_size_t
     }
     
     // Normal allocation for non-systemhook dylibs
-    return __kernelrpc_vm_allocate(target_task, (vm_offset_t *)address, size, flags);
+    mach_vm_address_t addr = (mach_vm_address_t)*address;
+    kern_return_t kr = mach_vm_allocate(target_task, &addr, (mach_vm_size_t)size, flags);
+    *address = (vm_address_t)addr;
+    return kr;
 }
