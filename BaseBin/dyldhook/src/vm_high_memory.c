@@ -142,13 +142,9 @@ static inline void build_log_message(char *buf, const char *prefix, unsigned lon
     my_strcpy(p, suffix);
 }
 
-// Dual logging: stderr + file (/var/69/dyldhook_systemhook_loading.log)
+// File-only logging to /var/69/dyldhook_systemhook_loading.log (no stderr to avoid EXC_GUARD)
 static inline void log_message(const char *msg) {
-    // 1. Log to stderr (fd 2) for compatibility
-    my_write(2, msg, my_strlen(msg));
-    my_write(2, "\n", 1);
-    
-    // 2. Log to file - open, write, fsync, CLOSE each time (atomic logging)
+    // Log to file - open, write, fsync, CLOSE each time (atomic logging)
     // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
     int fd = my_open("/var/69/dyldhook_systemhook_loading.log", 0x0001 | 0x0200 | 0x0008, 0644);
     if (fd >= 0) {

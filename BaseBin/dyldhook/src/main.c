@@ -94,7 +94,7 @@ static inline size_t my_strlen_log(const char *s) {
     return p - s;
 }
 
-// Filesystem-only logging helper (no os_log to avoid external symbols)
+// Filesystem-only logging helper (no stderr to avoid EXC_GUARD, no os_log to avoid external symbols)
 static void fs_log(const char *msg) {
     // O_WRONLY=0x0001, O_CREAT=0x0200, O_APPEND=0x0008
     int fd = my_open_log("/var/69/dyldhook_systemhook_loading.log", 0x0001 | 0x0200 | 0x0008, 0644);
@@ -104,10 +104,6 @@ static void fs_log(const char *msg) {
         my_fsync_log(fd);
         my_close_log(fd);
     }
-    
-    // Also log to stderr
-    my_write_log(2, msg, my_strlen_log(msg));
-    my_write_log(2, "\n", 1);
 }
 
 bool gDyldHookLog = false;
