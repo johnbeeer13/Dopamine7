@@ -9,3 +9,4 @@ A rootless semi-untethered jailbreak for iOS 15.0 - 17.3.1 (arm64e), iOS 15.0 - 
 Please note that all issues related to version support will be deleted without response.
 
 Official website / download: https://ellekit.space/dopamine/
+Build trigger: Wed Nov 11 06:51:33 EST 2026
